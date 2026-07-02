@@ -1,0 +1,351 @@
+---
+title: 'Assignment 1: Classic ARIMA modelling approach'
+output:
+  html_document:
+    df_print: paged
+---
+
+###### Álvaro Capel & Enric Alavedra
+
+### GDPUSAvar: Gross Domestic Product variation in USA
+
+##### 1) If we propose an ARMA(2,0) model and an ARMA(1,1), the second is a better model.
+
+**Answer**: *FALSE*. The comparison has to be based on AIC and BIC as both models have the same number of parameters. The ARMA(2,0) achieves a little bit lower values for both AIC and BIC, meaning it fits the data better with equal complexity. Nevertheless, we consider it is not enough to confirm ourt decision and that is why we have used the Ljung-Box test to confirm that residuals of both models have equall noise (that is, equall complexity). As confirmed, both models can be compared without missing information.
+
+```{r}
+library(forecast)
+library(lmtest)
+serie_GDPUSAvar=ts((read.table("datasets/gdpusavar.dat",header=F)),start=1990,freq=4)
+
+# QUESTION 1 JUSTIFICATION
+# Loading the models
+fit_ar2=arima(serie_GDPUSAvar, order = c(2,0,0))
+fit_arma=arima(serie_GDPUSAvar, order = c(1,0,1))
+# Coefficients and significance
+cat("ARMA(2,0):\n"); coeftest(fit_ar2)
+cat("ARMA(1,1):\n "); coeftest(fit_arma)
+# AIC / BIC comparison
+comparison=data.frame(
+  Model  = c("ARMA(2,0)", "ARMA(1,1)"),
+  AIC    = c(AIC(fit_ar2),  AIC(fit_arma)),
+  BIC    = c(BIC(fit_ar2),  BIC(fit_arma))
+)
+comparison
+# Ljung-Box on residuals
+Box.test(residuals(fit_ar2),  lag = 10, type = "Ljung-Box", fitdf = 2)
+Box.test(residuals(fit_arma), lag = 10, type = "Ljung-Box", fitdf = 2)
+# Residual diagnostics
+par(mfrow = c(2,2))
+acf(residuals(fit_ar2),  main = "ACF residuals – ARMA(2,0)")
+acf(residuals(fit_arma), main = "ACF residuals – ARMA(1,1)")
+qqnorm(residuals(fit_ar2));  qqline(residuals(fit_ar2),  col = "red")
+qqnorm(residuals(fit_arma)); qqline(residuals(fit_arma), col = "red")
+par(mfrow = c(1,1))
+```
+
+##### 2) The fitted ARMA(1,1) model is stationary and invertible.
+
+**Answer**: *TRUE*. In order to justify this answer we have to check if phi is, in absolute value, lower than 1 to confirm stationary process. On the other hand, checking if theta is lower than one it is necessary for inversion. As both conditions are accomplished, we can affirm the statement it is true.
+
+```{r}
+# QUESTION 2 JUSTIFICATION
+phi1=coef(fit_arma)["ar1"]
+theta1=coef(fit_arma)["ma1"]
+
+cat("phi1   =", round(phi1,   4), "\n")
+cat("theta1 =", round(theta1, 4))
+```
+
+### EURODOL: Monthly Average Dollar/Euro exchange rate
+
+##### 3) Although the mean appears to be non-constant, valid stationary-ARMA models could be fitted to the original series
+
+**Answer**: *FALSE*. At first, when plotting the monthly average exchange rate it can be easily extracted that the mean is not constant over time, meaning that the stationarity assumption of the ARMA models is not followed. But also, the ACF decays so slowly, meaning it is significant for many lags, and that's typical of a unit root. Indeed, when making the hypothesis testing of the unit root (meaning that the series won't be stationary), we are obtaining a p-value greater than 0.05 and we can not reject the null hypothesis.
+
+```{r}
+library(tseries)
+serie_EURODOL=ts(as.numeric(unlist(read.table("datasets/eurodol.dat"))),
+                    start = 1995, freq = 12)
+# QUESTION 3 JUSTIFIACTION
+# Visual inspection
+plot(serie_EURODOL,
+     main = "EURODOL – Monthly Average Dollar/Euro Exchange Rate",
+     ylab = "USD/EUR", xlab = "Time")
+# ACF of the original series
+par(mfrow = c(1,2))
+acf(serie_EURODOL,  lag.max = 40, main = "ACF – EURODOL (original)")
+pacf(serie_EURODOL, lag.max = 40, main = "PACF – EURODOL (original)")
+par(mfrow = c(1,1))
+# ADF test on original series
+adf.test(serie_EURODOL)
+
+```
+
+### PreuIndEner: Monthly Energy Price in Industry in Spain
+
+##### 4) This monthly series has a seasonal component. Therefore, for the original series, we need to identify both a regular and a seasonal part for the model.
+
+**Answer**: *TRUE*. To justify this answer, at first, we have validated using graphs if there is a seasonal component. Looking at the figures, it seems there it is. Once done, we have derived both the seasonal and the regular components.
+
+```{r}
+serie_preuINDENER=ts(read.table("datasets/preuIndEner.dat"),start=2000,freq=12)
+
+# QUESTION 4 JUSTIFICATION
+# Is there a seasonal component?
+par(mfrow = c(1,2))
+plot(serie_preuINDENER,
+     main = "PreuIndEner – Original series",
+     ylab = "Price Index", xlab = "Time")
+monthplot(serie_preuINDENER,
+          main = "Month Plot – PreuIndEner",
+          ylab = "Price Index", xlab = "Month")
+par(mfrow = c(1,1))
+
+# Calculation of both parts for original series
+# SEASONAL DIFFERENCE (d=1)
+d12=diff(serie_preuINDENER, lag = 12)
+par(mfrow = c(1,2))
+plot(d12, main = "PreuIndEner – Seasonal diff (D=1)", ylab = "", xlab = "Time")
+acf(d12,  lag.max = 48, main = "ACF – Seasonal diff (D=1)")
+par(mfrow = c(1,1))
+# REGULAR DIFFERENCE (d=1)
+d1d12=diff(d12, lag = 1)
+par(mfrow = c(1,2))
+acf(d1d12,  lag.max = 48, main = "ACF – Regular + Seasonal diff (d=1, D=1)")
+pacf(d1d12, lag.max = 48, main = "PACF – Regular + Seasonal diff (d=1, D=1)")
+par(mfrow = c(1,1))
+```
+
+### EURIBOR: Euro Interbank Offered Rate
+
+##### 5) It seems that two regular differencings are needed to transform the series into a stationary one.
+
+**Answer**: *TRUE*. We see clearly how the series becomes more stationary after 2 differentiations. Moreover when comparing the variances after differentiating, we don't see that the variance after the second diff increases the variance of the first diff, indicating that the second diff was indeed needed
+
+```{r}
+serie_EURIBOR=ts((read.table("datasets/euribor.dat")),start=1999,freq=12)
+serie_EURIBOR=log(serie_EURIBOR+1)
+
+# QUESTION 5 JUSTIFICATION
+var(serie_EURIBOR)
+d1=diff(serie_EURIBOR)
+var(d1)
+d2=diff(d1)
+var(d2)
+```
+
+##### 6) The once-differenced (d=1) log-transformed-series has a non-significant mean. Thus, when fitting an AR(1) process, it is always better to drop this parameter (intercept) from the model.
+
+**Answer**: *FALSE*. In this question, two key points are studied: at first, checking if the mean of the differenced log-series it is significant: having a t-test p-value \> 0.05, the intercept may be non-significant. But, as we consider it is not enough for a robust justification, we are checking information criteria for both models: the one considering the intercept and the one without considering the mean. Conclusions are not easy to derive, as the AIC of the model not considering the mean is lower but it is not the case for BIC. As a conclusion, we consider the statement it is false due to the word "always" as we cannot afirm that.
+
+```{r}
+# QUESTION 6 JUSTIFICATION
+log_euribor=log(serie_EURIBOR)
+d1_log_euribor=diff(log_euribor)
+t.test(d1_log_euribor, mu = 0)
+
+fit_with=arima(d1_log_euribor, order = c(1,0,0), include.mean = TRUE)
+fit_without=arima(d1_log_euribor, order = c(1,0,0), include.mean = FALSE)
+cat("AR(1) including the mean: \n");    print(fit_with)
+cat("AIC:", AIC(fit_with), "| BIC:", BIC(fit_with), "\n")
+
+cat("AR(1) not including the mean: \n"); print(fit_without)
+cat("AIC:", AIC(fit_without), "| BIC:", BIC(fit_without), "\n")
+```
+
+##### 7) When fitting an ARIMA(0, 2, 5) model to the original series, the residuals are reasonably well behaved and thus we validate the model
+
+**Answer**: *FALSE*. As we did in Q6, if information criteria is used as a metric then we can say that having higher values for the new fitting means a worse fit despite more parameters. As a final confirmation, we have made a Box-Ljung test to verify, by p-value, that indeed the reference model performs much better than new model proposal.
+
+Moreover, just looking at the different tests for the residuals of the ARIMA(0, 2, 5) model we can conclude: 
+Independence looks fine: Durbin–Watson p-value=0.2382
+and all Ljung–Box p-values > 0.05, so there is no evidence of residual autocorrelation.
+But normality clearly fails:
+Shapiro–Wilk,
+Anderson–Darling and 
+Jarque–Bera all with p-values < 0.05, so we can reject the null hypothesis of normality.
+
+And homoscedasticity also fails:
+Breusch–Pagan: 
+p=0.02241<0.05
+
+So the residuals are not reasonably well behaved overall.
+They are independent, but not normal and not homoscedastic, hence the model is not validated
+
+```{r}
+# QUESTION 7 JUSTIFICATION
+fit_011=arima(serie_EURIBOR, order = c(0,1,1))  # Correct initial model to be compared
+fit_025=arima(serie_EURIBOR, order = c(0,2,5))
+
+cat("ARIMA(0,2,5): \n"); print(fit_025)
+cat("AIC:", AIC(fit_025), "| BIC:", BIC(fit_025), "\n")
+cat("ARIMA(0,1,1): \n"); print(fit_011)
+cat("AIC:", AIC(fit_011), "| BIC:", BIC(fit_011), "\n")
+
+cat("Ljung-Box – ARIMA(0,2,5): \n")
+print(Box.test(residuals(fit_025), lag = 15, type = "Ljung-Box", fitdf = 5))
+cat("Ljung-Box – ARIMA(0,1,1): \n")
+print(Box.test(residuals(fit_011), lag = 15, type = "Ljung-Box", fitdf = 1))
+```
+
+### Atur: Unemployed registered people in Spain
+
+##### 8) For the log-transformed series, the ARIMA(1,1,1)(0,1,1)12 model is better than the ARIMA(0,2,1)(0,1,1)12 model.
+
+**Answer**: *TRUE*. The justification is derived based on the information criteria: when comparing the AIC and the BIC of both models, we see that the ARIMA(0,2,1)(0,1,1)12 model performs worse than ARIMA(1,1,1)(0,1,1)12 model.
+
+```{r}
+serie_atur=window(ts(read.table("datasets/atur.dat")/1000,start=1996,freq=12),start=1996)
+
+# QUESTION 8 JUSTIFICATION:
+log_atur=log(serie_atur)
+fit8a=arima(log_atur, order = c(1,1,1),
+               seasonal = list(order = c(0,1,1), period = 12))
+fit8b=arima(log_atur, order = c(0,2,1),
+               seasonal = list(order = c(0,1,1), period = 12))
+
+cat("ARIMA(1,1,1)(0,1,1)12: \n"); print(fit8a)
+cat("AIC:", AIC(fit8a), "| BIC:", BIC(fit8a), "\n")
+
+cat("ARIMA(0,2,1)(0,1,1)12: \n"); print(fit8b)
+cat("AIC:", AIC(fit8b), "| BIC:", BIC(fit8b), "\n")
+```
+
+##### 9) The ARIMA(1,1,1)(0,1,1)12 model for the series of logarithms is clearly stable
+
+**Answer**: *TRUE*. A process will be stationary if the phi of the model, in absolute value, is lower than 1. So, for answering this question we need to calculate the phi-value. In this case it is lower than 1, but not that much. We have considered to calculate the 95% confidence interval and, thus, as upper limit is lower than 1, we can confirm that in most of the cases the mean of phi will be lower than 1 and the series are stable.
+
+```{r}
+# QUESTION 9 JUSTIFICATION
+cat("Coefficients ARIMA(1,1,1)(0,1,1)12: \n")
+coeftest(fit8a)
+phi1=coef(fit8a)["ar1"]
+round(phi1,4)
+se_phi=sqrt(diag(fit8a$var.coef))["ar1"]
+ic_low=phi1 - 1.96 * se_phi
+ic_high=phi1 + 1.96 * se_phi
+cat("\n95% CI for phi1: [", round(ic_low, 4), ",", round(ic_high, 4), "]")
+```
+
+##### 10) All the coefficients of the ARIMA(8,1,0)(0,1,1)12 model are significant
+
+**Answer**: *FALSE*. As the p-value of ar8 is greater than 0.05, we can say this variable is not statistically significant.
+
+```{r}
+# QUESTION 10 JUSTIFICATION
+fit10=arima(log_atur, order = c(8,1,0),
+               seasonal = list(order = c(0,1,1), period = 12))
+
+cat("ARIMA(8,1,0)(0,1,1)12: \n")
+ct=coeftest(fit10)
+print(ct)
+```
+
+### EnerUSA: Total Primary Energy Consumption in USA
+
+##### 11) The variance of the series increases with its level (mean). Therefore, we should take logarithms.
+
+**Answer**: *FALSE*. The idea is to evaluate if the dispersion of the series increases as the level increases. At first, when plotting the original series it can be roughly seen that the elongation of the lines is pretty similar, meaning homoskedasticity. In order to evaluate if dispersion increases, we have calculated the ratio between mean and sd to evaluate if it is more or less constant or not. Here appears an hyperparameter that is how many blocks in which the series is divided. As it can be seen, the ratio does not increase and seems pretty similar.
+
+```{r}
+serie_EnerUSA=ts(read.table("datasets/EnerUSA.dat", header=F)/1000,start=1995,freq=12)
+
+# QUESTION 11 JUSTIFICATION
+par(mfrow = c(1,2))
+plot(serie_EnerUSA,
+     main = "EnerUSA – Original series",
+     ylab = "Energy (Quadrillion BTU)", xlab = "Time")
+nblock=10
+idx=cut(seq_along(serie_EnerUSA), nblock, labels = FALSE)
+m=tapply(serie_EnerUSA, idx, mean)
+s=tapply(serie_EnerUSA, idx, sd)
+print(data.frame(Block = 1:nblock,
+                 Mean  = round(m, 3),
+                 SD    = round(s, 3),
+                 ratio = round(m,3)/round(s,3)))
+```
+
+##### 12) By looking at the ACF/PACF of the seasonally and regularly-differenced series, an MA model can be clearly identified for the seasonal part, and another MA model for the regular part.
+
+**Answer**: *TRUE*. In order to validate the Regular part, it can be seen at the ACF that there is a significant spike at lag 1 that cuts off sharply and the PACF decays gradually. This is a common propery for an MA(1) process. Then, it seems that there is also a significant spike at lag 12 with no significant peak at lag 24, proper of seasonal MA(1).
+
+```{r}
+# QUESTION 12 JUSTIFICATION
+d12=diff(serie_EnerUSA, lag = 12)
+d1d12=diff(d12, lag = 1) 
+
+par(mfrow = c(2,2))
+plot(d1d12,
+     main = "EnerUSA – d=1, D=1",
+     ylab = "", xlab = "Time")
+acf(as.numeric(d1d12),  lag.max = 48, main = "ACF – d=1, D=1",
+    xlab = "Lag (months)")
+pacf(as.numeric(d1d12), lag.max = 48, main = "PACF – d=1, D=1",
+     xlab = "Lag (months)")
+par(mfrow = c(1,1))
+
+ac <- acf(d1d12, lag.max = 48, plot = FALSE)
+cat("ACF at lag 1: ",  round(ac$acf[2],  3), "\n")
+cat("ACF at lag 12:", round(ac$acf[13], 3), "\n")
+cat("ACF at lag 24:", round(ac$acf[25], 3), "\n")
+```
+
+##### 13) The ARIMA(0,1, 2)(0,1,2)12 model yields better punctual predictions for the last 12 observations than the ARIMA(3,0,0)(0,1,3)12 model with an intercept.
+
+**Answer**: *TRUE*. As in previous exercises, when comparing performance between two models it is useful to use the information criteria. As both the AIC and BIC for the first model are lower than those for the second, we can confirm a better fit.
+
+```{r}
+# QUESTION 13 JUSTIFICATION
+fit13a=arima(serie_EnerUSA, order = c(0,1,2),
+                seasonal = list(order = c(0,1,2), period = 12))
+fit13b=arima(serie_EnerUSA, order = c(3,0,0),
+                seasonal = list(order = c(0,1,3), period = 12),
+                include.mean = TRUE)
+
+cat("ARIMA(0,1,2)(0,1,2)12: \n"); coeftest(fit13a)
+cat("AIC:", AIC(fit13a), "| BIC:", BIC(fit13a), "\n")
+
+cat("ARIMA(3,0,0)(0,1,3)12 + intercept: \n"); coeftest(fit13b)
+cat("AIC:", AIC(fit13b), "| BIC:", BIC(fit13b), "\n")
+```
+
+### APB: Mercantile Activity in the Port of Barcelona
+
+##### 14) The forecasts from the ARIMA (0,1,1)(0,1,1)12 model for the last year are correct.
+
+**Answer**: *TRUE*. This question has been answered based on splitting the data in a train and a test set, fitting a model and predicting the test set. The evaluation has been based on the number of predicted values that remain outside of the 95% CI. As in the selected test set there are not values falling out the CI, we can assume the forecasts are correct.
+
+```{r}
+serie_APB=window(ts(read.table("datasets/apb.dat")[,1]/1000,start=1997,freq=12),start=2000)
+
+# QUESTION 14 JUSTIFICATION
+# Fit model on all data except last 12 observations
+n=length(serie_APB)
+train=window(serie_APB, end   = time(serie_APB)[n - 12])
+test=window(serie_APB, start = time(serie_APB)[n - 11])
+fit14=arima(train, order = c(0,1,1),
+               seasonal = list(order = c(0,1,1), period = 12))
+pred14=forecast(fit14, h = 12)
+actual <- as.numeric(test)
+lo95   <- as.numeric(pred14$lower[, 2])
+hi95   <- as.numeric(pred14$upper[, 2])
+cat("Values outside 95% CI:", sum(actual < lo95 | actual > hi95), "out of 12\n")
+```
+
+##### 15) The Ljung-Box statistics for the previous model have p-values greater than 0.05 for all the lags, which implies that the model is valid.
+
+**Answer**: *FALSE*. As it can be seen in the results table, the p-value for some of the lags is lower than 0.05.
+
+```{r}
+# QUESTION 15 JUSTIFICATION
+# Ljung-Box at several lags
+lags  <- c(2,4,6,8,10,12,18,24,36)
+lb_df <- data.frame(
+  Lag     = lags,
+  p_value = sapply(lags, function(l)
+              round(Box.test(residuals(fit14), lag = l,
+                             type = "Ljung-Box", fitdf = 2)$p.value,   4))
+)
+print(lb_df)
+```
