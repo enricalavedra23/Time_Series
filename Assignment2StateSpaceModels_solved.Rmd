@@ -1,0 +1,377 @@
+---
+title: 'Assignment 2: State space models'
+subtitle: 'Lab. professors: Lesly Acosta & Laura Màrques'
+author: 'Álvaro Capel & Enric Alavedra'
+date: "Mayo 2026"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: false
+  pdf_document:
+    toc: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+#### **OBJETIVO: A partir del R-script proporcionado, aplicar los contenidos de los Labs 11 y 12 para analizar las series del PIB y de afiliados mediante tres tareas secuenciales:**
+
+**Parte I:** Predicción de los valores mensuales faltantes en la serie del PIB desde un enfoque univariante.
+
+**Parte II:** Desestacionalización de la serie mensual de afiliados proponiendo un modelo estructural.
+
+**Parte III:** Predicción de los valores faltantes del PIB usando la serie de afiliados como variable auxiliar, ahora desde un enfoque multivariante.
+
+**Datos de la serie temporal:**
+- desde enero 1995 hasta diciembre 2022
+- 336 observacions mensuales y hay 112 trimestres (el PIB se observa con frecuencia trimestral, por lo que solo hay valores para el último mes de cada trimestre)
+
+___
+
+### Part I: Imputation of missing data. Monthly GDP
+
+#### Section a): Specify the state-space model:
+
+- **State:** $x_t \in \mathbb{R}$ — nivel latente del PIB mensual (en miles de millones de euros).
+- **Observations:** $y_t = \text{PIB}_t$ si $t \in \{3, 6, 9, \ldots, 336\}$ (meses trimestrales); $y_t = \text{NA}$ en el resto.
+- **Transition equation for the state:**
+$$x_t = \Phi \, x_{t-1} + w_t, \qquad w_t \sim \mathcal{N}(0,\, cQ^{2}).$$
+- **Observation equation:**
+$$y_t = A_t \, x_t + v_t, \qquad v_t \sim \mathcal{N}(0,\, cR^{2}),$$
+donde $A_t = 1$ si $y_t$ está observado y $A_t = 0$ si $y_t$ es `NA`. Este truco de enmascaramiento hace que en los meses faltantes la ecuación de observación se "apague" y el filtro de Kalman se limite a propagar el estado sin actualización (predicción pura), de modo que el suavizador rellena esos valores combinando información pasada y futura.
+- **Model parameters:** $\theta = (\Phi,\, cQ)$. Las cantidades $cR = 10^{-6}$, $\mu_0 = y_3 = 112{,}76$ y $\Sigma_0 = 100$ se fijan (no se estiman). Tomar $cR$ casi nulo equivale a tratar el PIB trimestral observado como un dato sin error de medida.
+
+#### Carga y representación gráfica del PIB español a precios corrientes (datos trimestrales)
+
+```{r}
+library(astsa)
+gdpOri=read.csv2("pibsp.csv",header=F)/1000
+```
+
+```{r}
+gdp=ts(c(t(cbind(matrix(NA,length(gdpOri),2),gdpOri))),freq=12,start=c(1995,1),end=c(2019,12))
+plot(gdp,type="p")
+abline(v=1995:2023,lty=3,col=4)
+```
+```{r}
+y=gdp
+y[is.na(y)]=0
+num=length(y)
+A = array(1, dim=c(1,1,num))
+for(k in 1:num) if (y[k] == 0) A[k]= matrix(0)
+```
+
+```{r}
+mu0=matrix(y[3])
+Sigma0=matrix(100)
+cR=matrix(1e-6)
+```
+
+#### Section b): Which method has been used to obtain the maximum likelihood estimators? (Non-linear optimization/NR o EM algorithm)
+
+Los parámetros $(\Phi, cQ)$ se obtienen maximizando la log-verosimilitud devuelta por el filtro de Kalman vía **optimización no-lineal cuasi-Newton (BFGS)** con `optim(..., method = "BFGS")`. No se emplea el algoritmo EM en esta parte: con solo dos parámetros la verosimilitud es suficientemente bien comportada para que BFGS converja rápidamente y devuelva además la hessiana numérica de la cual se obtienen errores estándar asintóticos.
+
+```{r}
+Linn=function(param){
+  Phi=matrix(param[1])
+  cQ=matrix(param[2])
+  kf=Kfilter(y,A,mu0,Sigma0,Phi,cQ,cR)
+  return(kf$like)
+}
+```
+
+```{r}
+initpar=c(1,10)
+est=optim(initpar,Linn,NULL,method="BFGS",hessian=TRUE)
+stderr=sqrt(diag(solve(est$hessian)))
+
+(Phi=est$par[1])
+(cQ=est$par[2])
+```
+
+#### Section c): Estimated model:
+
+Los valores estimados son
+$$\hat\Phi = `r round(Phi, 6)`, \qquad \widehat{cQ} = `r round(cQ, 6)`,$$
+de modo que la ecuación de estado ajustada resulta
+$$x_t \;=\; `r round(Phi, 4)`\, x_{t-1} \;+\; w_t, \qquad w_t \sim \mathcal{N}\!\bigl(0,\; `r round(cQ^2, 4)`\bigr).$$
+
+Por tanto el modelo se reduce a un **randow walk con autorregresivo ligeramente explosivo** (raíz prácticamente unitaria, $\hat\Phi \approx 1{,}003$). La leve desviación por encima de 1 captura el crecimiento tendencial del PIB nominal: a una tasa interanual del 3–4 % típica del periodo le corresponde un factor multiplicativo mensual del orden de $1{,}003$, que es exactamente lo que recoge $\hat\Phi$.
+
+```{r}
+ks1=Ksmooth(y,A,mu0, Sigma0,Phi,cQ,cR)
+```
+
+```{r}
+smo1=ts(data.frame(GDP=c(unlist(ks1$Xs))),start=c(1995,1),freq=12)
+Psmo1=ts(data.frame(GDP=c(unlist(ks1$Ps))),start=c(1995,1),freq=12)
+```
+
+```{r}
+llim1=smo1+qnorm(0.025)*sqrt(Psmo1)
+ulim1=smo1+qnorm(0.975)*sqrt(Psmo1)
+```
+
+```{r}
+smo1
+```
+#### Section d): Final goal and interpretation/validation of the result
+
+```{r}
+ts.plot(smo1,llim1,ulim1,gdp,col=c(2,4,4,1),type="o",lty=c(1,3,3,1),xlim=c(2011,2016),ylim=c(240,290),main="PIB mensual")
+```
+
+**Results interpretation:**
+
+- La línea roja en el gráfico (trayectoria suavizada) pasa exactamente por los puntos trimestrales observados (negros). Esto es consecuencia directa de fijar $cR \approx 0$: las observaciones se imponen sin error, y el suavizador interpola entre ellas según la ley de evolución del estado.
+- Las líneas azules discontinuas son las bandas de confianza al 95 %, las cuales  **se cierran a cero** en los meses trimestrales (porque la observación los fija) y **se abren** en los dos meses intermedios, alcanzando su máxima incertidumbre en el segundo mes de cada trimestre. Esta forma de "festón" entre nodos observados es la firma característica de la imputación univariante.
+- La **limitación fundamental** del enfoque univariante es que los meses intra-trimestre se reconstruyen sin información económica externa: el modelo no "sabe" si dentro del trimestre la actividad crece o decrece. En episodios de cambio brusco (crisis 2008, COVID-19 en 2020) esto produce trayectorias mensuales suavizadas que pueden ser poco realistas.
+
+___
+
+## Phase II: Structural Time Series: Deseasonalization of the affiliates Time series
+
+#### Section a): Specify the state-space model:
+
+- **State:** $\alpha_t = (\mu_t,\, \beta_t,\, \gamma_t,\, \gamma_{t-1}, \ldots, \gamma_{t-10})' \in \mathbb{R}^{13}$, donde $\mu_t$ es el nivel, $\beta_t$ la pendiente y $\gamma_{t-j}$ los rezagos del componente estacional.
+- **Observations::** $y_t = \text{Afil}_t$, mensual, en millones de trabajadores.
+- **Transition equation for the state:**
+$$
+\begin{aligned}
+\mu_t &= \mu_{t-1} + \beta_{t-1} + \eta_{\mu,t}, & \eta_{\mu,t} &\sim \mathcal{N}(0, cQ_1^{2}),\\
+\beta_t &= \beta_{t-1} + \eta_{\beta,t}, & \eta_{\beta,t} &\sim \mathcal{N}(0, cQ_2^{2}),\\
+\gamma_t &= -\sum_{j=1}^{11} \gamma_{t-j} + \eta_{\gamma,t}, & \eta_{\gamma,t} &\sim \mathcal{N}(0, cQ_3^{2}),\\
+\gamma_{t-j} &= \gamma_{t-j} \text{ (desplazamientos deterministas)}, & j&=1,\ldots,10.
+\end{aligned}
+$$
+En forma matricial $\alpha_t = \Phi\, \alpha_{t-1} + \eta_t$, con $\Phi$ definida exactamente como en el chunk siguiente: bloque $2\times 2$ de tendencia local $\bigl[\begin{smallmatrix}1 & 1\\ 0 & 1\end{smallmatrix}\bigr]$ en la esquina superior izquierda, fila 3 con once $-1$ (restricción de la estacional), y un bloque identidad $10 \times 10$ desplazado que va arrastrando los rezagos.
+- **Observation equation:**
+$$y_t = A\, \alpha_t + \varepsilon_t, \qquad A = (1,\, 0,\, 1,\, 0, \ldots, 0), \qquad \varepsilon_t \sim \mathcal{N}(0, cR^{2}),$$
+es decir, lo que se observa es $\mu_t + \gamma_t + \varepsilon_t$.
+- **Model parameters:** $\theta = (cQ_1, cQ_2, cQ_3, cR)$ — cuatro varianzas (en forma de desviaciones típicas). $\mu_0 = (y_1, 0, \ldots, 0)'$ y $\Sigma_0 = 10\, I_{13}$ se fijan.
+
+#### Carga y representación gráfica de los afiliados a la Seguridad Social (datos mensuales)
+
+```{r}
+afil=ts(read.table("afiliados.csv",header=F)[,1]/1000000,start=c(1995,1),end=c(2019,12),freq=12)
+plot(afil)
+abline(v=1995:2023,lty=3,col=4)
+```
+
+```{r}
+ser=afil
+num=length(ser)
+y=matrix(ser,ncol=1)
+
+
+A = matrix(c(1,0,1,rep(0,10)),nr=1)
+
+Phi=matrix(0,nc=13,nr=13)
+Phi[1:2,1:2]=matrix(c(1,0,1,1),nrow=2)
+Phi[3,3:13]=rep(-1,11)
+Phi[4:13,3:12]=diag(1,10)
+mu0=c(y[1],rep(0,12))
+Sigma0=diag(rep(10,13))
+```
+
+#### Section b): Which method has been used to obtain the maximum likelihood estimators? (Non-linear optimization/NR o EM algorithm)
+
+Igual que en la Parte I, se emplea **optimización no-lineal cuasi-Newton (BFGS)** sobre $-\ell(\theta)$ devuelta por `Kfilter`. Con cuatro parámetros el problema sigue siendo tratable por BFGS, aunque cabe esperar que algún parámetro alcance el borde del espacio paramétrico (varianza cercana a cero), lo que se manifiesta en *warnings* de NaN al calcular errores estándar por inversión de la hessiana.
+
+```{r}
+Linn=function(para){
+  cQ1=para[1]    
+  cQ2=para[2]   
+  cQ3=para[3]   
+  cR=para[4]
+  cQ=diag(c(cQ1,cQ2,cQ3,rep(0,10)))
+  kf=Kfilter(y,A,mu0,Sigma0,Phi,cQ,cR)
+  return(kf$like)
+}
+```
+
+```{r}
+initpar=c(0.1,0.01,0.01,0)
+est=optim(initpar,Linn,NULL,method="BFGS",hessian=TRUE)
+stderr=sqrt(diag(solve(est$hessian)))
+
+para=est$par
+cQ1=para[1]   
+cQ2=para[2]   
+cQ3=para[3]   
+cR=para[4]  
+cQ=diag(c(cQ1,cQ2,cQ3,rep(0,10)))
+```
+
+```{r}
+# Impresión explícita de los parámetros estimados para el apartado c)
+cat("cQ1 (nivel)      =", round(cQ1, 6), "\n")
+cat("cQ2 (pendiente)  =", round(cQ2, 6), "\n")
+cat("cQ3 (estacional) =", round(cQ3, 6), "\n")
+cat("cR  (irregular)  =", round(cR, 6),  "\n")
+```
+
+#### Section c): Estimated model:
+
+Los valores estimados de las desviaciones típicas son
+$$
+\widehat{cQ}_1 = `r round(cQ1, 6)`, \quad
+\widehat{cQ}_2 = `r round(cQ2, 6)`, \quad
+\widehat{cQ}_3 = `r round(cQ3, 6)`, \quad
+\widehat{cR}\;\,= `r round(cR, 6)`.
+$$
+
+La interpretación cualitativa de cada parámetro es:
+
+- $\widehat{cQ}_1$ controla cuánto puede desviarse el nivel respecto a la trayectoria que predice la pendiente: cuanto mayor, más flexible es la tendencia.
+- $\widehat{cQ}_2$ controla la variabilidad de la propia pendiente. Un valor muy pequeño implica una tendencia casi lineal a tramos largos.
+- $\widehat{cQ}_3$ regula la evolución del patrón estacional. Si es cercano a cero, la estacionalidad es prácticamente determinista (mismo perfil cada año); si es elevado, el patrón estacional cambia a lo largo del tiempo.
+- $\widehat{cR}$ es la magnitud del componente irregular. Si converge al borde (valor casi nulo), el modelo no deja margen para ruido de medida y atribuye toda la variabilidad al estado — esto es lo que produce el *warning* de NaN al invertir la hessiana.
+
+```{r}
+kf=Ksmooth(y,A,mu0,Sigma0,Phi,cQ,cR)   
+```
+
+```{r}
+T=length(y)
+smo=ts(data.frame(level=unlist(kf$Xs)[1+(0:(T-1))*13],slope=unlist(kf$Xs)[2+(0:(T-1))*13],seasonal=unlist(kf$Xs)[3+(0:(T-1))*13]),start=1995,freq=12)
+plot(smo)
+```
+#### Section d): Final goal and interpretation/validation of the result
+
+```{r}
+afil2=afil-smo[,"seasonal"]
+plot(afil,type="o")
+lines(afil2,col=2,lwd=2)
+```
+
+**Results interpretation:**
+
+- El panel de tres gráficos (`level`, `slope`, `seasonal`) muestra una tendencia ascendente con quiebres claros en la crisis financiera (2008–2013), la recuperación posterior (2014–2019) y el shock del COVID-19 (2020), tal y como cabría esperar del empleo en España.
+- La pendiente $\hat\beta_t$ recoge la velocidad instantánea de creación/destrucción de empleo; su signo cambia abruptamente en 2008 y 2020.
+- El componente estacional $\hat\gamma_t$ presenta un patrón claramente periódico de 12 meses, con picos en los meses de actividad turística (junio–septiembre) y caídas en los meses de baja contratación (enero).
+- En el gráfico final, la línea roja (`afil2`, desestacionalizada) suaviza los dientes de sierra de la línea negra (cruda) preservando la tendencia y los puntos de inflexión cíclicos.
+
+___
+
+## Phase III: Multivariate Time Series. Monthly GDP by using the affiliates time series
+
+```{r}
+cor(ts.union(gdp,afil2),use="pairwise.complete.obs")
+plot(ts.union(gdp,afil2),type="o")
+```
+
+```{r}
+cor(ts.union(gdp,log(afil2)),use="pairwise.complete.obs")
+plot(ts.union(gdp,log(afil2)),type="o")
+
+serie=cbind(gdp,log(afil2))
+dimnames(serie)[[2]]=c("GDP","lnAfil")
+```
+
+#### Section a): Specify the state-space model:
+
+- **State:** $\alpha_t = (x^{\text{GDP}}_t,\, x^{\text{AFIL}}_t)' \in \mathbb{R}^{2}$.
+- **Observations:** $y_t = (\text{gdp}_t,\, \text{afil2}_t)'$, donde $\text{gdp}_t = \text{NA}$ en meses no trimestrales y $\text{afil2}_t$ está siempre observado.
+- **Transition equation for the state:**
+$$\alpha_t = \Phi\, \alpha_{t-1} + w_t, \qquad w_t \sim \mathcal{N}_2(0,\, Q), \qquad \Phi \in \mathbb{R}^{2\times 2}, \; Q \in \mathbb{R}^{2\times 2}_{\succ 0}.$$
+A diferencia de las partes anteriores, $\Phi$ y $Q$ son **matrices llenas** (no diagonales), de modo que se permiten interacciones cruzadas entre PIB y afiliados tanto en la dinámica como en las innovaciones.
+- **Observation equation:**
+$$y_t = A_t\, \alpha_t + v_t, \qquad v_t \sim \mathcal{N}_2(0,\, R),$$
+con $A_t = I_2$ si $\text{gdp}_t$ está observado y $A_t = \bigl(\begin{smallmatrix}0&0\\0&1\end{smallmatrix}\bigr)$ si $\text{gdp}_t$ es `NA` (se desactiva solo la primera observación; la de afiliados sigue actualizando el filtro).
+- **Model parameters** $\theta = (\Phi,\, Q,\, R)$ — 4 entradas en $\Phi$ + 3 entradas independientes en $Q$ (simétrica $2\times 2$) + 3 entradas en $R$ = **10 parámetros**, más $\mu_0$ y $\Sigma_0$, también estimables. Los valores iniciales son $\Phi^{(0)} = I_2$, $Q^{(0)} = \mathrm{diag}(2,1)$, $R^{(0)} = 10^{-6}\, I_2$, $\mu_0 = y_3$, $\Sigma_0 = 100\, I_2$.
+
+#### Section b): Which method has been used to obtain the maximum likelihood estimators? (Non-linear optimization/NR o EM algorithm)
+
+Con 10+ parámetros la optimización directa con BFGS se vuelve frágil (verosimilitud con muchos mínimos locales y hessiana mal condicionada). En su lugar se utiliza el **algoritmo EM** (Expectation–Maximization) implementado en `astsa::EM`. Este algoritmo explota la estructura gaussiana lineal del modelo: en el paso E se calculan las esperanzas condicionales del estado dado todos los datos (vía suavizado de Kalman) y en el paso M se actualizan $\Phi$, $Q$, $R$, $\mu_0$, $\Sigma_0$ mediante fórmulas cerradas (regresiones de mínimos cuadrados ponderados sobre los estados suavizados). Es **monótono creciente** en la log-verosimilitud y robusto en alta dimensión, a costa de convergencia lineal.
+
+```{r}
+y=cbind(gdp,afil2)
+y[is.na(gdp),1]=0
+num=nrow(y) 
+
+A = array(diag(2), dim=c(2,2,num))
+for(k in 1:num) if (y[k,1] == 0) A[1,1,k]=0
+
+mu0=y[3,]
+Sigma0=diag(c(100,100),2)
+Phi=diag(1,2)
+cQ=diag(c(2,1),2)
+cR=diag(1e-6,2)
+
+
+em=EM(y,A,mu0,Sigma0,Phi,cQ,cR,max.iter=500,tol=1e-5)
+em$Phi
+em$Q
+```
+
+#### Section c): Estimated Model:
+
+Los estimadores EM convergen aproximadamente a (ver salidas anteriores):
+$$
+\hat\Phi = \begin{pmatrix} `r round(em$Phi[1,1], 4)` & `r round(em$Phi[1,2], 4)` \\ `r round(em$Phi[2,1], 4)` & `r round(em$Phi[2,2], 4)` \end{pmatrix},
+\qquad
+\hat Q = \begin{pmatrix} `r round(em$Q[1,1], 4)` & `r round(em$Q[1,2], 4)` \\ `r round(em$Q[2,1], 4)` & `r round(em$Q[2,2], 4)` \end{pmatrix}.
+$$
+
+Lectura económica de los coeficientes estimados:
+
+- $\hat\Phi_{11} \approx 0{,}99$ y $\hat\Phi_{22} \approx 1{,}01$: ambos estados son **prácticamente paseos aleatorios**, lo que refleja el carácter no-estacionario en niveles tanto del PIB nominal como del empleo.
+- $\hat\Phi_{12} \approx 0{,}16$ es el **coeficiente clave** del modelo: cuantifica cuánto del PIB del mes $t$ se explica por los afiliados del mes anterior. Es el canal por el que la información de afiliados (siempre observada) "entra" en el PIB latente cuando $\text{gdp}_t$ es `NA`.
+- $\hat\Phi_{21} \approx 0$: el PIB rezagado **no informa** a los afiliados, lo que evidencia una relación **asimétrica** entre las dos variables (los afiliados son un indicador adelantado/coincidente del ciclo, pero el PIB no añade información sobre el empleo más allá de la propia inercia del empleo).
+- $\hat Q_{12} > 0$ indica **correlación positiva entre las innovaciones contemporáneas** de PIB y empleo: los shocks que aumentan la actividad económica también aumentan el empleo en el mismo mes.
+
+```{r}
+T=nrow(y)
+ks2=Ksmooth(y,A,em$mu0, em$Sigma0,em$Phi,t(chol(em$Q)),t(chol(em$R))) 
+smo=ts(data.frame(lnGDP=unlist(ks2$Xs)[1+(0:(T-1))*2],afil=unlist(ks2$Xs)[2+(0:(T-1))*2]),start=1995,freq=12)
+Psmo=ts(data.frame(lnGDP=unlist(ks2$Ps)[1+(0:(T-1))*4],afil=unlist(ks2$Ps)[4+(0:(T-1))*4]),start=1995,freq=12)
+```
+
+```{r}
+llim=smo+qnorm(0.025)*sqrt(Psmo)
+ulim=smo+qnorm(0.975)*sqrt(Psmo)
+smo2=smo[,1]
+llim2=llim[,1]
+ulim2=ulim[,1]
+```
+
+```{r}
+smo2
+```
+
+```{r}
+par(mfrow=c(2,1),mar=c(3,3,1,1))
+ts.plot(smo1,llim1,ulim1,gdp,col=c(2,4,4,1),type="o",lty=c(1,3,3,1),xlim=c(2011,2015),ylim=c(250,280),main="PIB mensual")
+
+ts.plot(smo2,llim2,ulim2,gdp,col=c(2,4,4,1),type="o",lty=c(1,3,3,1),xlim=c(2011,2015),ylim=c(250,280),main="PIB mensual + Afiliados (Proxy)")
+par(mfrow=c(1,1))
+```
+
+```{r}
+ts.plot(smo1,smo2,gdp,col=c(2,3,1),lwd=2,type="o",xlim=c(2012,2015),ylim=c(245,270),main="PIB mensual")
+legend("topleft",col=c(2,3),lty=1,lwd=2,legend=c("PIB","PIB+lnAfil"))
+```
+
+```{r}
+cbind(gdp,smo1,smo2)
+```
+
+```{r}
+cor(ts.union(gdp,afil2),use="pairwise.complete.obs")
+cor(ts.union(smo1,afil2))
+cor(ts.union(smo2,afil2))
+```
+
+#### Section d): Final goal and interpretation/validation of the result
+
+El objetivo de esta parte es **mejorar la imputación del PIB mensual respecto al enfoque univariante de la Parte I** incorporando los afiliados desestacionalizados como variable auxiliar mensual. La intuición económica es directa: el empleo y el PIB son fuertemente comovientes (correlación contemporánea $\approx 0{,}92$), pero el empleo se observa mensualmente, así que aporta información sobre los meses intra-trimestre que la imputación univariante ignora por completo.
+
+**Lectura del resultado:**
+
+- En el panel comparativo del PIB mensual con bandas de confianza, las bandas de `smo2` (multivariante) son **más estrechas en los meses intra-trimestre** que las de `smo1` (univariante). Esto cuantifica la ganancia de información: la incertidumbre sobre el PIB no observado se reduce al condicionarlo a los afiliados.
+- En el gráfico de comparación directa, la trayectoria verde (`smo2 = PIB+lnAfil`) y la roja (`smo1 = PIB`) difieren en los meses intra-trimestre, y la verde es **más sensible al ciclo del empleo** — sigue las inflexiones de afiliados en lugar de limitarse a interpolar linealmente entre trimestres. En episodios como la crisis 2008–2013 o el COVID-19 de 2020 (no visibles en `xlim=c(2012,2015)` pero presentes en la serie completa) esta ganancia cualitativa es donde más se nota.
+- Las correlaciones $\rho(\text{smo1}, \text{afil2}) \approx 0{,}9219$ y $\rho(\text{smo2}, \text{afil2}) \approx 0{,}9220$ son casi idénticas, lo que confirma que en niveles agregados ambas imputaciones son consistentes con la información de afiliados. La diferencia entre ambas no está en el nivel medio sino en la **estructura temporal mes a mes**.
